@@ -27,7 +27,7 @@ def train(gen, dis, opt_gen, opt_dis, epoch, train_loader, train_diff_loader, tr
     dis.train()
 
     mse = nn.MSELoss(reduction = 'none').cuda(0)
-    mrf = IDMRFLoss(device=1)
+    mrf = IDMRFLoss(device=0)
 
     acc_pixel_rec_loss = 0
     acc_feat_rec_loss = 0
@@ -75,7 +75,7 @@ def train(gen, dis, opt_gen, opt_dis, epoch, train_loader, train_diff_loader, tr
         pixel_rec_loss = (mse(I_pred_split[0], I_l) + mse(I_pred_split[2], I_r)).mean() * batchSize + (mask * mse(I_pred_split[1][:batchSize_rec], I_m)).mean() * batchSize_rec
              
         # Texture Consistency Loss (IDMRF Loss)
-        mrf_loss = mrf((I_pred_split[1][:batchSize_rec].cuda(1)+1)/2.0, (I_m.cuda(1)+1)/2.0) * 0.01
+        mrf_loss = mrf((I_pred_split[1][:batchSize_rec].cuda(0)+1)/2.0, (I_m.cuda(0)+1)/2.0) * 0.01
         
         # Feature Reconstruction Loss
         feat_rec_loss = mse(f_m[:batchSize_rec], f_m_gt.detach()).mean() * batchSize_rec
@@ -124,7 +124,7 @@ def test(gen, dis, epoch, test_loader, test_diff_loader, test_rand_loader, write
     dis.eval()
     
     mse = nn.MSELoss(reduction = 'none').cuda(0)
-    mrf = IDMRFLoss(device=1)
+    mrf = IDMRFLoss(device=0)
     
     acc_pixel_rec_loss = 0
     acc_mrf_loss = 0
