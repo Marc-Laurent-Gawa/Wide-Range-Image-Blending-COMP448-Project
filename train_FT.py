@@ -281,9 +281,9 @@ if __name__ == '__main__':
     else:
         train_data_diff = dataset_diff(root=args.train_data_dir, transforms=transformations, crop='center', imgSize=256, select_root=args.train_metric_path, select_k=args.select_k)
     train_data_rand = dataset_complete(root=args.train_data_dir, transforms=transformations, crop='rand', imgSize=256, width=3)
-    train_loader = DataLoader(train_data, batch_size=int(args.train_batch_size/2), shuffle=True)
-    train_diff_loader = DataLoader(train_data_diff, batch_size=int(args.train_batch_size/2), shuffle=True)
-    train_rand_loader = DataLoader(train_data_rand, batch_size=int(args.train_batch_size/2), shuffle=True)
+    train_loader = DataLoader(train_data, batch_size=int(args.train_batch_size/2), shuffle=True, drop_last=True)
+    train_diff_loader = DataLoader(train_data_diff, batch_size=int(args.train_batch_size/2), shuffle=True, drop_last=True)
+    train_rand_loader = DataLoader(train_data_rand, batch_size=int(args.train_batch_size/2), shuffle=True, drop_last=True)
     print('train data: %d images, %d pairs'%(len(train_loader.dataset), len(train_diff_loader.dataset)))
     
     if args.test_flag:

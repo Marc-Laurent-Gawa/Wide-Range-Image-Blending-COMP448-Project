@@ -239,7 +239,7 @@ if __name__ == '__main__':
     print('Loading data...')
     transformations = transforms.Compose([ToTensor()])
     train_data = dataset_recon(root=args.train_data_dir, transforms=transformations, crop='rand', imgSize=256)
-    train_loader = DataLoader(train_data, batch_size=args.train_batch_size, shuffle=True)
+    train_loader = DataLoader(train_data, batch_size=args.train_batch_size, shuffle=True, drop_last=True)
     print('train data: %d images'%(len(train_loader.dataset)))
     if args.test_flag:
         test_data = dataset_recon(root=args.test_data_dir, transforms=transformations, crop='center', imgSize=256)

@@ -11,6 +11,7 @@ from models.Generator import Generator
 from datasets.dataset import dataset_test
 import argparse
 import skimage
+import sys
 
 # Evaluate
 def evaluate(gen, eval_loader, rand_pair, save_dir):
@@ -24,6 +25,7 @@ def evaluate(gen, eval_loader, rand_pair, save_dir):
         os.makedirs(join(save_dir, 'input2'), exist_ok=True)
 
     for batch_idx, (I1, I2, name) in enumerate(eval_loader):
+        print("Starting evaluation loop...", flush=True)
 
         imgSize = I1.shape[2]
         
@@ -34,6 +36,10 @@ def evaluate(gen, eval_loader, rand_pair, save_dir):
 
         I_pred_1_2 = np.transpose(I_pred_1_2[0].data.cpu().numpy(), (1,2,0))
         I_pred_2_1 = np.transpose(I_pred_2_1[0].data.cpu().numpy(), (1,2,0))
+        print("Output min:", I_pred_1_2.min().item(), "max:", I_pred_1_2.max().item(), "mean:", I_pred_1_2.mean().item(), flush=True)
+
+        I_pred_1_2 = (I_pred_1_2 + 1) / 2.0
+        I_pred_2_1 = (I_pred_2_1 + 1) / 2.0
 
         skimage.io.imsave(join(save_dir, 'result1-2', '%s.png'%(name[0])), skimage.img_as_ubyte(I_pred_1_2))
         skimage.io.imsave(join(save_dir, 'result2-1', '%s.png'%(name[0])), skimage.img_as_ubyte(I_pred_2_1))
@@ -78,7 +84,12 @@ if __name__ == '__main__':
     
     # Load pre-trained weight
     print('Loading model weight...')
-    gen.load_state_dict(torch.load(join(args.load_weight_dir, 'Gen')))
+    # gen.load_state_dict(torch.load(join(args.load_weight_dir, 'Gen')))
+    state_dict = torch.load(join(args.load_weight_dir, 'Gen'), map_location='cuda')
+    for k, v in state_dict.items():
+        if torch.isnan(v).any():
+            print(f"⚠️ NaN found in layer {k}")
+    gen.load_state_dict(state_dict)
     
     # Load data
     print('Loading data...')
