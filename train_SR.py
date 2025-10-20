@@ -21,6 +21,7 @@ os.environ["CUDA_VISIBLE_DEVICES"]="0,1"
 
 # Training
 def train(gen, dis, opt_gen, opt_dis, epoch, train_loader, writer):
+    torch.autograd.set_detect_anomaly(True)
     
     gen.train()
     dis.train()
@@ -89,12 +90,14 @@ def train(gen, dis, opt_gen, opt_dis, epoch, train_loader, writer):
         if (batch_idx % 3) != 0:
             opt_gen.zero_grad()
             gen_loss.backward()
+            torch.nn.utils.clip_grad_norm_(gen.parameters(), 1.0)
             opt_gen.step()
         
         ## Update Discriminator
         if (batch_idx % 3) == 0:
             opt_dis.zero_grad()
             dis_loss.backward()
+            torch.nn.utils.clip_grad_norm_(dis.parameters(), 1.0)
             opt_dis.step()
         
     ## Tensor board
@@ -237,16 +240,10 @@ if __name__ == '__main__':
 
     # Load data
     print('Loading data...')
-    transformations = transforms.Compose([ToTensor()])
+    transformations = transforms.Compose([ToTensor(), transforms.Lambda(lambda x: x * 2 - 1)])
     train_data = dataset_recon(root=args.train_data_dir, transforms=transformations, crop='rand', imgSize=256)
     train_loader = DataLoader(train_data, batch_size=args.train_batch_size, shuffle=True, drop_last=True)
-    for i, (img_l, img_r, img_m) in enumerate(train_loader):
-        if not torch.isfinite(img_l).all():
-            print(f"NaN or Inf in left image batch {i}", flush=True)
-        if not torch.isfinite(img_r).all():
-            print(f"NaN or Inf in right image batch {i}", flush=True)
-        if not torch.isfinite(img_m).all():
-            print(f"NaN or Inf in middle image batch {i}", flush=True)
+    print("Hello", flush=True)
     print('train data: %d images'%(len(train_loader.dataset)))
     if args.test_flag:
         test_data = dataset_recon(root=args.test_data_dir, transforms=transformations, crop='center', imgSize=256)
