@@ -240,6 +240,13 @@ if __name__ == '__main__':
     transformations = transforms.Compose([ToTensor()])
     train_data = dataset_recon(root=args.train_data_dir, transforms=transformations, crop='rand', imgSize=256)
     train_loader = DataLoader(train_data, batch_size=args.train_batch_size, shuffle=True, drop_last=True)
+    for i, (img_l, img_r, img_m) in enumerate(train_loader):
+        if not torch.isfinite(img_l).all():
+            print(f"NaN or Inf in left image batch {i}", flush=True)
+        if not torch.isfinite(img_r).all():
+            print(f"NaN or Inf in right image batch {i}", flush=True)
+        if not torch.isfinite(img_m).all():
+            print(f"NaN or Inf in middle image batch {i}", flush=True)
     print('train data: %d images'%(len(train_loader.dataset)))
     if args.test_flag:
         test_data = dataset_recon(root=args.test_data_dir, transforms=transformations, crop='center', imgSize=256)
