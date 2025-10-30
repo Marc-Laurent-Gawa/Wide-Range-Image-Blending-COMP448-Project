@@ -22,6 +22,7 @@ os.environ["CUDA_VISIBLE_DEVICES"]="0,1"
 
 # Training
 def train(gen, dis, opt_gen, opt_dis, epoch, train_loader, train_diff_loader, train_rand_loader, writer):
+    torch.autograd.set_detect_anomaly(True)
     
     gen.train()
     dis.train()
@@ -102,12 +103,14 @@ def train(gen, dis, opt_gen, opt_dis, epoch, train_loader, train_diff_loader, tr
         if (batch_idx % 3) != 0:
             opt_gen.zero_grad()
             gen_loss.backward()
+            torch.nn.utils.clip_grad_norm_(gen.parameters(), 5.0)
             opt_gen.step()
         
         ## Update Discriminator
         if (batch_idx % 3) == 0:
             opt_dis.zero_grad()
             dis_loss.backward()
+            torch.nn.utils.clip_grad_norm_(dis.parameters(), 5.0)
             opt_dis.step()        
     
     ## Tensor board
@@ -273,7 +276,7 @@ if __name__ == '__main__':
     
     # Load data
     print('Loading data...')
-    transformations = transforms.Compose([ToTensor()])
+    transformations = transforms.Compose([ToTensor(), transforms.Lambda(lambda x: x * 2 - 1)])
 
     train_data = dataset_recon(root=args.train_data_dir, transforms=transformations, crop='rand', imgSize=256)
     if args.rand_pair:
