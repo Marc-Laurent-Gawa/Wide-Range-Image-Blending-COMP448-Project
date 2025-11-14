@@ -35,7 +35,6 @@ def evaluate(gen, eval_loader, rand_pair, save_dir):
 
         I_pred_1_2 = np.transpose(I_pred_1_2[0].data.cpu().numpy(), (1,2,0))
         I_pred_2_1 = np.transpose(I_pred_2_1[0].data.cpu().numpy(), (1,2,0))
-        print("Output min:", I_pred_1_2.min().item(), "max:", I_pred_1_2.max().item(), "mean:", I_pred_1_2.mean().item(), flush=True)
 
         skimage.io.imsave(join(save_dir, 'result1-2', '%s.png'%(name[0])), skimage.img_as_ubyte(I_pred_1_2))
         skimage.io.imsave(join(save_dir, 'result2-1', '%s.png'%(name[0])), skimage.img_as_ubyte(I_pred_2_1))
@@ -88,7 +87,7 @@ if __name__ == '__main__':
         transformations = transforms.Compose([ToTensor()])
         eval_data = dataset_test(root1=args.test_data_dir_1, root2=args.test_data_dir_2, transforms=transformations, crop='rand', rand_pair=True, imgSize=256)
     else:
-        transformations = transforms.Compose([Resize((256,256)), ToTensor()])
+        transformations = transforms.Compose([Resize((256,256)), ToTensor(), transforms.Lambda(lambda x: x * 2 - 1)])
         eval_data = dataset_test(root1=args.test_data_dir_1, root2=args.test_data_dir_2, transforms=transformations, crop='none', rand_pair=False)
     eval_loader = DataLoader(eval_data, batch_size=1, shuffle=False)
     print('test data: %d image pairs'%(len(eval_loader.dataset)))
