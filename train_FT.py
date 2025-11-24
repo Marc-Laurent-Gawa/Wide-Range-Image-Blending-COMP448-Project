@@ -276,7 +276,7 @@ if __name__ == '__main__':
     
     # Load data
     print('Loading data...')
-    transformations = transforms.Compose([ToTensor(), transforms.Lambda(lambda x: x * 2 - 1)])
+    transformations = transforms.Compose([ToTensor()])
 
     train_data = dataset_recon(root=args.train_data_dir, transforms=transformations, crop='rand', imgSize=256)
     if args.rand_pair:

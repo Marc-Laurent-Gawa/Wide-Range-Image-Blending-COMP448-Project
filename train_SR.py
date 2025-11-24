@@ -240,7 +240,7 @@ if __name__ == '__main__':
 
     # Load data
     print('Loading data...')
-    transformations = transforms.Compose([ToTensor(), transforms.Lambda(lambda x: x * 2 - 1)])
+    transformations = transforms.Compose([ToTensor()])
     train_data = dataset_recon(root=args.train_data_dir, transforms=transformations, crop='rand', imgSize=256)
     train_loader = DataLoader(train_data, batch_size=args.train_batch_size, shuffle=True, drop_last=True)
     print("Hello", flush=True)
