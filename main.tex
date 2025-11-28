@@ -1,0 +1,155 @@
+\documentclass[11pt]{article}
+\usepackage[utf8]{inputenc}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{booktabs}
+\usepackage{geometry}
+\usepackage{hyperref}
+\usepackage{float}
+\usepackage{listings}
+\usepackage{color}
+\usepackage{microtype}
+\usepackage{enumitem}
+
+\geometry{a4paper, margin=1in}
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue,
+  citecolor=blue,
+  urlcolor=blue,
+  pdftitle={COMP 478/6771 Final Report: Wide-Range Image Blending (WRIB)}
+}
+
+\title{\bfseries COMP 478 / COMP 6771\\[0.6em] Final Report\\[0.6em] \large Wide-Range Image Blending (WRIB)}
+\author{
+\begin{tabular}{c}
+Marc-Laurent Frenette (40226091)\\
+Alexandre Catellier (40281048)\\
+Youssef Alsheghri (40108014)\\
+Eileen Fu (40311777)
+\end{tabular}
+\\[1em]
+\textbf{Instructor:} Dr.\ Yaser Esmaeili Salehani
+}
+\date{\today}
+
+\lstset{
+  basicstyle=\ttfamily\small,
+  breaklines=true,
+  columns=fullflexible,
+  frame=single,
+  backgroundcolor=\color{gray!5},
+  postbreak=\mbox{\textcolor{red}{$\hookrightarrow$}\space}
+}
+
+\begin{document}
+\maketitle
+\thispagestyle{empty}
+\clearpage
+
+\begin{abstract}
+    Wide-Range Image Blending (WRIB) synthesizes coherent panoramic images by generating the missing middle region between two non-overlapping inputs.
+    Traditional blending and stitching methods fail when images have large viewpoint differences or lack overlap.
+    WRIB addresses this by combining an encoder-decoder generator with bidirectional content transfer and a patch-based discriminator, 
+    trained in two stages: self-reconstruction and fine-tuning with adversarial supervision. 
+    In this study we reproduce and analyze WRIB, train it on the original natural scenery data and on an urban panorama dataset (CVRG-Pano), 
+    and present quantitative and qualitative evaluations. 
+    Results show WRIB succeeds on natural landscapes but struggles on urban scenes with strong geometric constraints. 
+    We propose targeted improvements and include new quantitative evaluations to support our conclusions.
+
+\end{abstract}
+
+\tableofcontents
+\clearpage
+
+\section{Introduction}
+Image blending aims to merge multiple images into a single coherent composition while maintaining color, texture, and structure across seams. 
+Classical methods like multi-band blending and Poisson editing require overlap or small viewpoint differences and therefore fail in wide-range scenarios.
+These limitations make wide-range blending, where images capture substantially different perspectives or distances, particularly challenging.
+
+\medskip
+
+Recent advances in deep learning have enabled models to learn contextual and semantic information, 
+making it possible to synthesize missing regions and produce smooth transitions between disjoint images. 
+This capability is essential for applications such as panoramic photography, virtual reality content creation, 
+and generative scene completion.
+
+\medskip
+
+Our project focuses on reproducing and extending the Wide-Range Image Blending (WRIB) framework, 
+a deep neural network model proposed by Lu et al. in \cite{lu2021wrib}. The motivation behind this work is to gain a deeper understanding of the model's architecture, 
+training process, and practical performance when applied beyond its original dataset. 
+By retraining the model on the CVRG-Pano dataset and comparing its outcomes, we aim to assess the generalization capability of WRIB and explore its potential applications in non-scenery or real-world image domains.
+
+\section{Related Work}
+Traditional image blending and panorama stitching methods rely on feature matching and multi-band blending to merge overlapping image regions smoothly. While effective in cases with good overlap, 
+these classical techniques degrade significantly when images have no shared regions, when viewpoints vary widely, 
+or when scene geometry is inconsistent. 
+In contrast, deep learning-based approaches have demonstrated strong capabilities for hallucinating missing regions and preserving semantic structure. 
+For example, Yang et al. \cite{yang2019outpainting} introduced an encoder-decoder architecture equipped with two key modules, 
+Skip Horizontal Connection (SHC) and Recurrent Content Transfer (RCT), which enable effective horizontal information propagation and support long-range generation. 
+Similarly, Yu et al. \cite{yu2018contextual} proposed a contextual attention mechanism that allows the network to explicitly reference known areas of the image when synthesizing unknown regions. 
+Overall, generative deep learning models provide significantly improved texture realism and semantic consistency compared to classical pixel-level blending.
+
+\medskip
+
+Recent advances in Generative Adversarial Networks (GANs) have pushed scene synthesis even further by jointly modeling global structure and local texture fidelity. 
+Building on this progress, Lu et al. \cite{lu2021wrib} proposed the Wide-Range Image Blending (WRIB) framework, a two-stage GAN architecture designed to generate plausible intermediate content between two non-overlapping images. 
+This WRIB framework is the model we reproduce and analyze in our project.
+
+\section{Paper Review: WRIB (Lu et al., 2021)}
+The WRIB model was first introduced in the paper \emph{Bridging the Visual Gap: Wide-Range Image Blending} by Lu et al. \cite{lu2021wrib}. The method combines ideas from inpainting, outpainting, and adversarial texture synthesis, achieving strong performance on natural scenery images. The authors propose a two-stage generative adversarial framework that takes two non-overlapping images as input and synthesizes a novel intermediate region to effectively “bridge'' them into a continuous panorama. The two stages operate as follows:
+
+\paragraph{Self-reconstruction stage.}  
+In this phase, each training image is split into three parts: \(I_L\) (left), \(I_M\) (middle), and \(I_R\) (right). The model receives \(I_L\) and \(I_R\) as inputs and is trained to reconstruct the middle region. The ground-truth patch \(I_M\) supervises the reconstruction, enforcing both pixel-level and feature-level consistency.
+
+\paragraph{Fine-tuning stage.}  
+Here, the model is adapted to realistic wide-range gaps where \(I_L\) and \(I_R\) come from different, unrelated images. Since no ground-truth middle region exists in this setting, adversarial learning is used to encourage semantic coherence and visual realism in the generated intermediate region.
+
+\medskip
+
+The training process incorporates a combination of losses, including pixel reconstruction loss, feature reconstruction loss, texture consistency loss, feature consistency loss, and a RaLSGAN adversarial loss. Together, these losses promote local detail preservation while maintaining global structural alignment.
+
+\medskip
+
+The authors train and evaluate the model on the CVRG-Pano dataset from Yang et al.'s \emph{Very Long Natural Scenery Image Prediction by Outpainting} \cite{yang2019outpainting}, which consists of 6000 natural landscape images. Their model produces high-quality panoramic blends with semantically plausible transitions.
+
+\medskip
+
+In our project, we adapt the official PyTorch implementation released by the authors and re-implement the training and evaluation pipeline. Furthermore, we train the model on the outdoor panoramic dataset used in Orhan et al.'s \emph{Semantic Segmentation of Outdoor Panoramic Images} \cite{orhan2022pano} to examine whether the WRIB architecture can generalize beyond natural scenery. Our goal is to analyze both the strengths and limitations of this approach when applied to alternative visual domains.
+
+\appendix
+\section{Appendix: References}
+\begin{thebibliography}{9}
+\bibitem{lu2021wrib}
+C.-N. Lu, Y.-C. Chang, and W.-C. Chiu, “Bridging the Visual Gap: Wide-Range Image Blending,” \emph{Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)}, pp. 2206-2215, 2021.
+
+\bibitem{yang2019outpainting}
+Z. Yang, J. Dong, P. Liu, Y. Yang, and S. Yan, “Very Long Natural Scenery Image Prediction by Outpainting,” \emph{Proceedings of the IEEE/CVF International Conference on Computer Vision (ICCV)}, pp. 10561-10570, 2019.
+
+\bibitem{orhan2022pano}
+Orhan, S. \& Bastanlar, Y., “Semantic segmentation of outdoor panoramic images,” Signal, Image and Video Processing, vol. 16, pp. 643-650, 2022. doi:10.1007/s11760-021-02003-3. 
+
+\bibitem{yu2018contextual}
+J. Yu, Z. Lin, J. Yang, X. Shen, X. Lu, and T. S. Huang, “Generative Image Inpainting with Contextual Attention,” in \emph{Proc. IEEE/CVF Conf. Computer Vision and Pattern Recognition (CVPR)}, Jun. 2018. 
+
+\bibitem{burt1983multiresolution}
+P. J. Burt and E. H. Adelson, “A Multiresolution Spline With Application to Image Mosaics,” \emph{ACM Transactions on Graphics}, vol. 2, no. 4, pp. 217-236, Oct. 1983.
+
+\bibitem{perez2003poisson}
+P. Pérez, M. Gangnet, and A. Blake, “Poisson Image Editing,” in \emph{Proc. ACM SIGGRAPH}, San Diego, CA, USA, Jul. 2003, pp. 313-318, doi: 10.1145/1201775.882269.
+
+\bibitem{pathak2016context}
+D. Pathak, P. Krähenbühl, J. Donahue, T. Darrell, and A. A. Efros, “Context Encoders: Feature Learning by Inpainting,” \emph{arXiv preprint} arXiv:1604.07379, 2016.
+
+\bibitem{liu2018inpainting}
+G. Liu, F. A. Reda, K. J. Shih, T.-C. Wang, A. Tao, and B. Catanzaro, “Image Inpainting for Irregular Holes Using Partial Convolutions,” \emph{arXiv preprint} arXiv:1804.07723, 2018.
+
+\bibitem{li2016markov}
+C. Li and M. Wand, “Combining Markov Random Fields and Convolutional Neural Networks for Image Synthesis,” \emph{arXiv preprint} arXiv:1601.04589, 2016. 
+
+\end{thebibliography}
+
+\end{document}
