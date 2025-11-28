@@ -1,4 +1,4 @@
-\documentclass[11pt]{article}
+\documentclass[11pt,twocolumn]{article}
 \usepackage[utf8]{inputenc}
 \usepackage{amsmath,amssymb}
 \usepackage{graphicx}
@@ -12,6 +12,28 @@
 \usepackage{color}
 \usepackage{microtype}
 \usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{dblfloatfix} % improve placement of table* in two-column mode
+
+\lstdefinestyle{pyplain}{
+  language=Python,
+  basicstyle=\ttfamily\footnotesize,      % smaller code font to save space
+  keywordstyle=\color{blue}\bfseries,
+  commentstyle=\color{gray}\itshape,
+  stringstyle=\color{teal},
+  showstringspaces=false,
+  breaklines=true,
+  frame=single,
+  rulecolor=\color{black!40},
+  numbers=left,
+  numberstyle=\scriptsize\color{gray},
+  numbersep=8pt,           % push numbers away from text
+  xleftmargin=12pt,       % indent code block so numbers don't touch margin
+  xrightmargin=4pt,
+  aboveskip=4pt,          % reduce vertical space above/below listings
+  belowskip=4pt,
+  lineskip=-0.5pt
+}
 
 \geometry{a4paper, margin=1in}
 \hypersetup{
@@ -36,19 +58,15 @@ Eileen Fu (40311777)
 \date{\today}
 
 \lstset{
-  basicstyle=\ttfamily\small,
-  breaklines=true,
+  style=pyplain,
   columns=fullflexible,
-  frame=single,
-  backgroundcolor=\color{gray!5},
+  backgroundcolor=\color{gray!3},
   postbreak=\mbox{\textcolor{red}{$\hookrightarrow$}\space}
 }
 
 \begin{document}
-\maketitle
-\thispagestyle{empty}
-\clearpage
 
+\maketitle
 \begin{abstract}
     Wide-Range Image Blending (WRIB) synthesizes coherent panoramic images by generating the missing middle region between two non-overlapping inputs.
     Traditional blending and stitching methods fail when images have large viewpoint differences or lack overlap.
@@ -60,9 +78,7 @@ Eileen Fu (40311777)
     We propose targeted improvements and include new quantitative evaluations to support our conclusions.
 
 \end{abstract}
-
-\tableofcontents
-\clearpage
+\vspace{1em}
 
 \section{Introduction}
 Image blending aims to merge multiple images into a single coherent composition while maintaining color, texture, and structure across seams. 
@@ -120,9 +136,266 @@ The authors train and evaluate the model on the CVRG-Pano dataset from Yang et a
 
 In our project, we adapt the official PyTorch implementation released by the authors and re-implement the training and evaluation pipeline. Furthermore, we train the model on the outdoor panoramic dataset used in Orhan et al.'s \emph{Semantic Segmentation of Outdoor Panoramic Images} \cite{orhan2022pano} to examine whether the WRIB architecture can generalize beyond natural scenery. Our goal is to analyze both the strengths and limitations of this approach when applied to alternative visual domains.
 
-\appendix
-\section{Appendix: References}
-\begin{thebibliography}{9}
+\section{Methodology}
+\subsection{Model Architecture (overview)}
+The WRIB model follows a Generative Adversarial Network (GAN) framework, which includes both a Generator and Discriminator; it predicts the missing middle region of the two images using a generator, while a discriminator evaluates its realism.
+
+\paragraph{Generator}
+The generator consists of an encoder-decoder architecture comprising:
+\begin{itemize}[noitemsep]
+  \item Two separate convolution encoders, each processing one of the input images, capturing spatial structure and semantics on each side
+  \begin{itemize}
+    \item The encoding of both images is done in 5 steps. Each step is composed of strided convolutions, which reduce the resolution through downsampling and increase the number of feature channels by a factor of 2, followed by an identity layer of Leaky Relu. After the 5 encoding steps. The resulting outputs of the encoding layer are two 8x8x1024 matrices, which are then further reduced to 4x4x512 through 1x1 convolution to facilitate the prediction phase in the next step
+
+  \end{itemize}
+  \item Bidirectional Transfer Content (BCT), which propagates contextual information from both sides, forming a smooth continuous transition
+  \begin{enumerate}[noitemsep]
+    \item For each left and right portion, the outputs are divided into 4 vertical slices, and passed through a 2 layer LSTM encoder to capture left to right feature for the left image, and right to left encoding for the right image.
+    \item Predict the middle region using both encoded images with 2 new LSTM layers. This produces two unique predictions of the middle regions using both left and right features
+    \item Concatenate the two predicted middle regions through the feature channels and merge using lightweight convolution.
+    \item Expand the middle predicted features into a 8x8x1024 matrix to prepare for the decoding stage using a Global Receptive Block 
+  \end{enumerate}
+  \item Skip connections at multiple feature levels to preserve spatial structure, with Attention-enhanced skip paths to selectively emphasize relevant feature maps
+
+  \item A symmetric decoder reconstructs the full image from the fused features. 
+  \begin{itemize}
+    \item The decoding is done using a transposed convolutional layer to upsample the resolution by factors of 2 and reducing the channels by 2 at each of the 5 steps. Each upsample stage receives a skip connection from its equivalent Encoding stage from the first phase of the algorithm.
+    \item The final upsample stage creates a 256x768x3 matrix that is passed into a sigmoid activation to produce the final resulting output.
+  \end{itemize}
+\end{itemize}
+
+Thus, given two input patches, $I_L$ and $I_R$, the generator encodes each input independently, 
+fuses their latent features, and decodes the combined representation to synthesize the missing region $I_M$. The final output is a continuous panoramic output made from the concatenation of $I_L$, predicted $I_M$, and $I_R$.
+
+\paragraph{Discriminator}
+The discriminator is a patch-based CNN classifier, making the distinction between real and generated blended panoramas. 
+Instead of classifying the entire images, it evaluates image patches to enforce local realism and enable the generator to learn finer textures and structural consistency. 
+This adversarial setup ensures that the synthesized middle region is both contextually aligned with the surrounding content while being visually realistic.
+
+\subsection{Training pipeline}
+WRIB training is divided into two successive phases, each meant to stabilize learning and enhance semantic blending performance.
+
+\paragraph{Stage 1: Self-reconstruction Training}
+We are given three inputs: $I_L$ (left), $I_M$ (middle), and $I_R$ (right). All three are patches of the same image. This provides full supervised training for the model to learn the encoder-BCT-decoder module. As in \cite{lu2021wrib}, we define the following losses at this stage:
+
+\begin{itemize}[noitemsep]
+    \item \textbf{Pixel reconstruction loss} measures how close the generated middle image is to the ground truth on the pixel level. The reconstruction is weighted by a mask to prevent heavy penalties in the central regions of the gap.
+    \item \textbf{Feature reconstruction loss} measures how close the generated middle region features match the encoder features of the ground truth.
+    \item \textbf{Texture consistency loss} encourages the generated region to match the texture statistics (rather than exact pixel alignment) of the ground truth, using ID-MRF.
+    \item \textbf{Feature consistency loss} enforces agreement between the two bidirectional feature predictions generated by the BCT module.
+    \item \textbf{RaLSGAN adversarial loss} trains the generator and the discriminator in opposition, and compares real and generated panoramas relatively, using the least squares formulation to stabilize gradients. 
+\end{itemize}
+This stage allows the model to learn semantic scene continuity and basic inpainting ability.
+
+\paragraph{Stage 2: Fine-Tuning with Adversarial Learning}
+In this stage, we use as inputs left and right patches from different images, optionally randomly paired, with the objective of improving generalization and realism. In the absence of a middle region ground truth, adversarial training becomes the primary driver for encouraging realistic structural transitions.  This stage maintains only parts of the pixel reconstruction and feature consistency losses to avoid visual drift. With the progressive transition towards adversarial learning, a more robust model is achieved that can generate plausible and coherent cross-scene blends.
+
+\subsection{Datasets}
+
+\paragraph{Original Dataset}
+Our first experiment is conducted using the same scenery dataset as used by Lu et al. in \cite{lu2021wrib}, first introduced by Yang et al \cite{yang2019outpainting}. The dataset consists of 5040 training images and 1000 testing images, all of which depict natural outdoor scenery. The images in the dataset cover a diverse range of environments, but maintain enough structural similarity to facilitate wide range blending.
+
+The dataset is processed by cropping a $256\times 768$ region from each image. Each cropped region is then split into 3 equal $256\times 256$ vertical slices: $I_L$, $I_M$, and $I_R$. For Stage 1, $I_L$ and $I_R$ from the same image are used as inputs, while IM is used as the ground truth. For Stage 2, the LPIPS distance between each crop and every other crop is computed in order to find the 3 most similar regions. Pairs of $I_L$ and $I_R$ are then taken from different images that are top 3 matches, creating samples that do not have any ground truth.
+
+We did not perform training on this original dataset for the purposes of our project, as resulting weights from Lu et al. are readily available. Instead, we used the weights provided by the authors to verify their results on a testing set.
+
+\paragraph{Alternate Dataset}
+In order to test the generalizability of Lu et al.'s methodology, we additionally conducted this experiment on the CVRG-Pano dataset used by Orhan et al. in \cite{orhan2022pano}. This is a semantically annotated dataset of manually real outdoor $360^{\circ}$ panoramic images, captured in an urban or suburban environment. The dataset contains 600 images, split into 446 training, 48 validation, and 76 testing images. This dataset is chosen to test the generalization capabilities of WRIB because its images are of a similar format to the original dataset, that is, they are wide panoramas, but depict different subject matters, and therefore contain distinct high level features. For our project, we ignore the semantic annotations in this dataset.
+
+We process this alternate dataset in the same manner as described for the original dataset, cropping each image and then dividing them equally into 3 vertical slices. We then performed two experiments: first, used the weights obtained by Lu et al. to directly perform WRIB on this dataset. Then, we performed  the two-stage training detailed in previous sections of this paper from scratch on this dataset, in order to compare the results between the two.
+
+\subsection{implementation Details}
+
+Our implementation of the model closely follows that of Lu et al. in \cite{lu2021wrib}. In order to run this model, the required environment and dependencies are Python 3.7.4 or above, PyTorch 1.0.0 or above, CUDA 9.2 or above, plus numpy, skimage, tensorboardX. 
+
+train\_SR.py performs self-reconstruction (stage 1) in the following steps:
+\begin{enumerate}[noitemsep]
+    \item Load and process the dataset as described
+    \item Configure the generator model, initiating the dual-incoder, BCT module, decoder with skip connections and skip attention
+    \item Define pixel reconstruction, feature reconstruction, texture consistency, feature consistency, and adversarial losses
+    \item Optimize generator and discriminator accordingly.
+\end{enumerate}
+
+train\_FT.py performs fine-tuning (stage 2) in the following steps:
+\begin{enumerate}[noitemsep]
+    \item Load and process dataset into different image pairs based on LPIPS similarity, as described 
+    \item Adjusts the model architecture to account for the lack of ground truth, such that pixel supervision only applies to the left and right, while adversarial 
+    \item Continues training using weights obtained from stage 1.
+\end{enumerate}
+
+test.py performs inference in the following steps:
+\begin{enumerate}[noitemsep]
+    \item Load pre-trained generator weights
+    \item Accepts two image directories for random pairing
+    \item Runs model to concatenate the left and right input images with a reconstructed middle.
+\end{enumerate}
+
+The model can be run using a Matlab script or a Google Collab setup, as detailed in the Readme file found in the project repository.
+
+\section{Results and Discussion}
+\subsection{Quantitative Results}
+A quantitative analysis plays an important role in determining the ability of the algorithm to generate a proper blend of two images of a different nature than the original dataset. 
+
+Our devised method for quantitatively analyzing the performance of the algorithm with our own dataset composed of street images consisted of first converting every resultant image to grayscale, resizing it to a fixed patch size and extracting HOG (histogram of oriented gradients) descriptors of the whole image and of the left, right and centre parts yielding high-dimensional vectors corresponding to an image or patch’s feature information. To make our comparisons and analysis more meaningful across images and more importantly data sets, we Z-score normalized every HOG component using the scenery whole-image mean and standard deviation, since the scenery images are the baseline of our analysis.
+
+For each image, we compute three difference vectors in HOG space: LR (right - left), LM (middle-left) and RM (right-middle). These difference vectors make derivation of other vectors of information easier, such as the signed mean over components (indicates consistent bias), the mean absolute per-feature change (an L1-like per-feature average in Z-units), and the Euclidean norm (L2) across components. In practice, the mean absolute per-feature change and the Euclidean norm are the clearest metrics for (how different is the middle patch from the original patches).
+An additional diagnostic is performed on the images, which is the calculation of gradient “energy” in columns of the image, which helps to show if columns in the image are visually smoother or contain fewer edges.
+
+\begin{table*}[t]
+\centering
+\setlength{\tabcolsep}{4pt}
+\small
+\resizebox{\textwidth}{!}{
+\begin{tabular}{l|c|c|c|c|c|c}
+\toprule
+Dataset & \multicolumn{3}{c|}{Scenery} & \multicolumn{3}{c}{Street} \\
+\midrule
+Metric (Z-units) & LM & RM & LR & LM & RM & LR \\
+\midrule
+
+Mean difference 
+& 0.0313 & -0.0168 & 0.0145 
+& 0.0811 & -0.0477 & 0.0334 \\
+
+Mean abs. difference 
+& 0.7372 {\tiny ($\pm$ 0.1452)} 
+& 0.7372 {\tiny ($\pm$ 0.1412)} 
+& 0.7012 {\tiny ($\pm$ 0.1432)} 
+& 1.0442 {\tiny ($\pm$ 0.1160)} 
+& 1.0225 {\tiny ($\pm$ 0.1098)} 
+& 0.9744 {\tiny ($\pm$ 0.1005)} \\
+
+Mean Euclidean Norm 
+& 1.0731 {\tiny ($\pm$ 0.1822)} 
+& 1.0673 {\tiny ($\pm$ 0.1726)} 
+& 1.0286 {\tiny ($\pm$ 0.1812)} 
+& 1.3884 {\tiny ($\pm$ 0.1420)} 
+& 1.3599 {\tiny ($\pm$ 0.1342)} 
+& 1.3188 {\tiny ($\pm$ 0.1255)} \\
+
+\bottomrule
+\end{tabular}
+}
+\caption{Quantitative HOG-based analysis of WRIB results on scenery and street datasets (mean ± standard deviation).}
+\label{tab:hog_analysis}
+\end{table*}
+
+Comparing the HOG statistics of images generated from the scenery dataset versus the street dataset, we can see that the mean feature difference of the left part of images to the generated part of images is of 0.0314 for the scenery dataset and 0.0811 for the street dataset, whereas the mean feature difference of left and right parts of images are of 0.0145 and 0.334, respectively. Considering the fact that the HOG feature values are Z-score normalized as per the mean feature for a scenery whole image, it tells us that there is very little systematic increase/decrease of oriented gradients. Next, comparing mean absolute difference as well as mean Euclidean norm per-feature, we get, for the scenery data set, an absolute difference of 0.7012 for left-right parts, 0.7372 for left-middle parts and Euclidean norms of 1.0286 for left-right parts, 1.0731 for left-middle parts. As for the street dataset, the values obtained for the absolute difference are 0.9744 for left-right, 1.0442 for left-middle, and for the norm, 1.3188 for left-right, 1.3884 for left-middle. 
+
+These results indicate that the reconstructed middles for the street images deviate substantially more from the originals than the middles for the scenery images. Concretely, the street set shows larger per-feature absolute changes and larger Euclidean norms than the scenery set, roughly a 25-40% larger per-feature RMS, even though the signed mean differences remain very small. The small signed means tell us there is no large consistent directional bias (features both increase and decrease), but the larger L1/L2 magnitudes for streets reveal a bigger magnitude of structural/texture change (e.g., more blurring, missing detail, misaligned edges or hallucinated content) in the generated middle.
+
+Lastly for the quantitative analysis, we may look at the second diagnostic we performed on our results, which was regarding the gradient energy in an image’s columns. We may select the two following images on which we will perform the diagnostic, one from the street data set and the other from the scenery dataset:
+\begin{figure}[H]
+    \centering
+    \begin{subfigure}{0.45\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{figures/img-106.png}
+        \caption{Street image example}
+        \label{fig:street_example}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}{0.45\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{figures/scenery_5804.png}
+        \caption{Scenery image example}
+        \label{fig:scenery_example}
+    \end{subfigure}
+    \caption{Example images from street and scenery datasets for gradient energy analysis.}
+    \label{fig:example_images}
+\end{figure}
+
+Iterating over an image's columns and summing its gradient magnitudes can yield an interesting metric that could reveal information about an image’s edges and textures at its different sections, and we of course segregate these sections in a vertical fashion since the image blending occurs for the middle part of two images stitched together horizontally.
+
+\begin{figure}[H]
+    \centering
+    \begin{subfigure}{0.45\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{figures/selected_street_image_gradient_energy.png}
+        \caption{Gradient energy for street image}
+        \label{fig:grad_energy_street}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}{0.45\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{figures/selected_scenery_image_gradient_energy.png}
+        \caption{Gradient energy for scenery image}
+        \label{fig:grad_energy_scenery}
+    \end{subfigure}
+    \caption{Gradient energy plots for street and scenery images.}
+    \label{fig:grad_energy_plots}
+\end{figure}
+
+With these gradient magnitudes plotted, we can clearly observe that the middle part of the street image resulting from the blending algorithm is subject to a drop in column-wise gradient energy, which visually translates to a loss of high-frequency detail compared to its original side images. By contrast, the image resulting from the scenery dataset isn’t subject to a perceivable change in frequency between the columns in the middle part of the image versus its left and right parts. In fact, this trend of the columns in the middle part of a blended image being significantly lower in gradient energy can be observed throughout all resulting images from our street dataset, whereas the scenery dataset yields gradient energies that are consistent throughout the different parts of the image. This result is a clear indication that the algorithm has a lesser ability to properly generate a middle part for image maintaining the level of detail of our street dataset since it requires the generation of higher-frequency features with more definite textures, and aligns with our findings from the previous diagnostic analyzing HOG feature differences. 
+
+\subsection{Qualitative Results}
+
+A qualitative analysis of the results yields some very interesting observations given the very different nature of the original versus the new dataset on which the algorithm was applied. 
+
+\textbf{Scenery dataset with original weights.} The original dataset consists of images of natural landscapes, which contains a high degree of pseudo-random variation and fractal-like structures. Features, such as trees, rocks, or clouds, do not follow any rigid layout, but are distributed according to some correlated noise. This both allows the model to learn some degree of underlying pattern, and also gives the model more freedom to produce plausible image blends. As there is no one “correct” arrangement of natural features, generated images appear realistic and coherent to the human eye, even if there are minor inconsistencies in texture, structure, and alignment, as long as the greater statistical constraints are followed. 
+
+\textbf{Urban dataset with scenery weights.} The pseudo-random quality of natural scenery does not hold true for man-made structures. Urban environments follow geometric patterns and repeating structures, with a lot of straight lines, right angles, defined boundaries, and uniform surfaces. Thus, urban scenes are highly regular and low in stochastic variation compared to natural scenery.  When applying the weights obtained from natural scenery to our new dataset of street images, we observe a much less coherent reconstruction, rife with random perturbations in object placement, incomplete structures, wobbly lines, and other unnatural artifacts. 
+
+\begin{figure}[H]
+    \centering
+    \begin{subfigure}{0.45\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{figures/scenery_5853.png}
+        \caption{Scenery dataset result with original weights}
+        \label{fig:scenery_result}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}{0.45\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{figures/img-224.png}
+        \caption{Street dataset result with scenery weights}
+        \label{fig:street_result_scenery_weights}
+    \end{subfigure}
+    \caption{Qualitative results comparing scenery dataset with original weights and street dataset with scenery weights.}
+    \label{fig:qualitative_comparison}
+\end{figure}
+
+\textbf{Urban dataset with urban weights.} When the model is trained using the CVRG-Pano dataset, the model exhibits behavior that differs sharply from its performance on natural landscapes. While the model can recreate the natural components of the middle gap (for instance, the sky and clouds are consistent with left and right inputs), it has difficulty handling high frequency geometric objects. The model fails to construct realistic features to bridge the gap between inputs, converging on a repeating grid structure in stage 1 (self-reconstruction) and a hallucinated building-like object that is seen in every output image in stage 2 (fine-tuning).
+
+\begin{figure}[H]
+    \centering
+    \begin{subfigure}{0.45\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{figures/img-95.png}
+        \caption{Street dataset result with urban weights - Stage 1}
+        \label{fig:street_result_stage1}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}{0.45\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{figures/img-37.png}
+        \caption{Street dataset result with urban weights - Stage 2}
+        \label{fig:street_result_stage2}
+    \end{subfigure}
+    \caption{Qualitative results on street dataset with urban weights for both training stages.}
+    \label{fig:street_urban_weights}
+\end{figure}
+
+This indicates that the model is unable to learn the complex and rigid structural features required for urban objects. The behavior is even more pronounced in the fine-tuning stage, where the adversarial network exhibits mode collapse around a single geometric object that appears texturally consistent, but never learns to produce a diverse range of globally coherent structures.
+
+\subsection{observations}
+The quantitative and qualitative results indicate a clear contrast between the model’s behavior on natural and urban environments. Quantitative analysis shows that the generated middle regions from street images deviate more strongly than those in scenery datasets, with larger structural and textural discontinuities. In addition, while scenery images maintain stable gradient energy with the reconstructed center, street images display a noticeable drop in gradient energy in the reconstructed center. This indicates a failure to generate high-frequency detail in man-made geometric structures.
+
+This result aligns with qualitative analysis. When using scenery weights on scenery inputs, the model produces coherent panoramas with smooth transitions that appear realistic to the human eye. This is contrasted by the prevalence of distorted boundaries and unnatural artifacts that result from applying these same scenery weights to the urban dataset.When trained on the urban dataset, the model reproduces low-frequency natural elements, yet collapses onto a hallucinated building-like shape that appears regardless of input.
+
+\section{limitations and Future Work}
+The discriminator in this model analyzes images locally, rather than globally. In other words, it evaluates realism on the patch level, judging whether local textures and edges look real, rather than checking if the entire blended image is structurally coherent. This model works well for natural scenery, as natural scenery is typically continuous with few discrete boundaries, and obeys no strict structural rules. Such images tolerate significant structural variation, allowing a patch-level discriminator to preserve global consistency as long as local content is coherent.
+
+This model breaks down for highly regular manmade environments. Buildings, streets, windows, and other objects follow straight lines, strict perspective constraints, logical connections, and discrete boundaries. If the generator produces a locally realistic, but globally incoherent patch, such as a floating window in the middle of a street, the discriminator would still approve it because it doesn't violate texture and low-level feature realism. Furthermore, such errors accumulate, producing the nonsensical, artifact-laden middle portions we see.
+
+Several architectural and training modifications could address the issue of coherence failure when applied to man-made environments. A second, global level discriminator could be implemented, operating on the full panorama to enforce line continuity, geometric consistency, and similar scene-level semantic realism. A semantic-aware discriminator may produce better results, taking advantage of the pretrained semantic segmentation already available in the CVRG-Pano dataset to enforce class level consistency.
+
+\section{Conclusion}
+The results of our replication study highlight both the strengths and the limitations of the Wide-Range Image Blending (WRIB) framework. When applied to natural scenery, the model reliably produces coherent transitions, benefiting from the inherent flexibility and visual permissiveness of landscapes. However, our experiments on street-level panoramas reveal the limits of this approach. Urban environments impose rigid structural relationships where pseudorandom variation appears incorrect. In these settings, WRIB's patch-level adversarial supervision fails to enforce global consistency, often producing locally plausible but globally implausible blends.
+Despite these limitations, our study confirms that the fundamental architecture and training strategy of WRIB can be adapted beyond natural landscapes. The fine-tuning stage improves generalization, and the model retains meaningful blending capability even when faced with structurally complex scenes. Future improvements, such as the integration of semantic supervision or globally aware discriminators, may enable more reliable performance in urban or other highly structured image domains.
+Overall, this project provides a clear assessment of WRIB's generalization behavior, demonstrates its potential for broader applications, and identifies concrete technical directions for enhancing WRIB in visually structured environments.
+
+
+\appendix\begin{thebibliography}{9}
 \bibitem{lu2021wrib}
 C.-N. Lu, Y.-C. Chang, and W.-C. Chiu, “Bridging the Visual Gap: Wide-Range Image Blending,” \emph{Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)}, pp. 2206-2215, 2021.
 
@@ -151,5 +424,231 @@ G. Liu, F. A. Reda, K. J. Shih, T.-C. Wang, A. Tao, and B. Catanzaro, “Image I
 C. Li and M. Wand, “Combining Markov Random Fields and Convolutional Neural Networks for Image Synthesis,” \emph{arXiv preprint} arXiv:1601.04589, 2016. 
 
 \end{thebibliography}
+
+\appendix
+\section{Implementation Summary \& Relevant Code}
+
+The following are the most important and relevant components of the full codebase
+
+\begin{lstlisting}[style=pyplain,caption={Generative model feed forward}]
+def forward(self, x1, x2=None, only_encode=False):
+    
+    shortcut = [[] for i in range(6)]
+    
+    # Encode x1
+    x1, shortcut_x1 = self.encode(x1)
+    for i in range(6):
+        shortcut[i].append(shortcut_x1[i])
+
+    if only_encode:
+        return x1
+    
+    # Encode x2
+    x2, shortcut_x2 = self.encode(x2)
+    for i in range(6):
+        shortcut[i].append(shortcut_x2[i])
+    
+    # Feature Extrapolate
+    f_out, f1, f2 = self.BCT(x1, x2)
+    
+    # Decode
+    out = self.feature_out(f_out)
+    
+    out = torch.cat((shortcut[5][0],out,shortcut[5][1]),3)
+    out = self.decode(out, shortcut)
+    
+    return out, f_out, f1, f2
+\end{lstlisting}
+
+\begin{lstlisting}[style=pyplain,caption={Discriminative model feed forward (used in training to evaluate generative model output}]
+def forward(self,x):
+       
+        x = self.conv1(x)
+        x = self.conv2(x)
+        x = self.conv3(x)
+        x = self.conv4(x)
+        x = x.view(x.size(0), -1)
+        x = self.output(x)
+        return x
+
+\end{lstlisting}
+
+\begin{lstlisting}[style=pyplain,caption={SR Training algorithm}]
+def train(gen, dis, opt_gen, opt_dis, epoch, train_loader, writer):
+    torch.autograd.set_detect_anomaly(True)
+   
+    gen.train()
+    dis.train()
+
+    mse = nn.MSELoss(reduction = 'none').cuda(0)
+    mrf = IDMRFLoss(device=0)
+   
+    acc_pixel_rec_loss = 0
+    acc_feat_rec_loss = 0
+    acc_mrf_loss = 0
+    acc_feat_cons_loss = 0
+    acc_gen_adv_loss = 0
+    acc_dis_adv_loss = 0
+   
+    for batch_idx, (I_l, I_r, I_m) in enumerate(train_loader):
+       
+        if batch_idx % 10 == 0:
+            print("train iter %d" %batch_idx)
+           
+        batchSize = I_l.shape[0]
+        imgSize = I_l.shape[2]
+           
+        I_l, I_r, I_m = Variable(I_l).cuda(0), Variable(I_r).cuda(0), Variable(I_m).cuda(0)
+       
+        ## Generate Image
+        I_pred, f_m, F_l, F_r = gen(I_l, I_r)
+        f_m_gt = gen(I_m, only_encode=True) # gt for feature map of middle part
+        I_pred_split = list(torch.split(I_pred, imgSize, dim=3))
+        I_gt = torch.cat((I_l,I_m,I_r),3)
+       
+        ## Discriminator
+        fake = dis(I_pred)
+        real = dis(I_gt)
+       
+        ## Compute losses        
+        # Pixel Reconstruction Loss
+        weight = gaussian_weight(batchSize, imgSize, device=0)
+        mask = weight + weight.flip(3)
+        pixel_rec_loss = (mse(I_pred_split[0], I_l) + mse(I_pred_split[2], I_r) + mask * mse(I_pred_split[1], I_m)).mean() * batchSize
+             
+        # Texture Consistency Loss (IDMRF Loss)
+        mrf_loss = mrf((I_pred_split[1].cuda(0)+1)/2.0, (I_m.cuda(0)+1)/2.0) * 0.01
+       
+        # Feature Reconstruction Loss
+        feat_rec_loss = mse(f_m, f_m_gt.detach()).mean() * batchSize
+       
+        # Feature Consistency Loss
+        feat_cons_loss = (mse(F_l[0], F_r[0]) + mse(F_l[1], F_r[1]) + mse(F_l[2], F_r[2])).mean() * batchSize        
+       
+        # RaLSGAN Adversarial Loss
+        real_label = torch.ones(batchSize,1).cuda(0)
+        fake_label = torch.zeros(batchSize,1).cuda(0)
+        gen_adv_loss = ((fake - real.mean(0, keepdim=True) - fake_label) ** 2).mean() * batchSize * 0.002 * 0.9
+        dis_adv_loss = (((real - fake.mean(0, keepdim=True) - real_label) ** 2).mean() + ((fake - real.mean(0, keepdim=True) + real_label) ** 2).mean()) * batchSize
+       
+        gen_loss = pixel_rec_loss + mrf_loss.cuda(0) + feat_rec_loss + feat_cons_loss + gen_adv_loss
+        dis_loss = dis_adv_loss
+        acc_pixel_rec_loss += pixel_rec_loss.data
+        acc_mrf_loss += mrf_loss.data
+        acc_feat_rec_loss += feat_rec_loss.data
+        acc_feat_cons_loss += feat_cons_loss.data
+        acc_gen_adv_loss += gen_adv_loss.data
+        acc_dis_adv_loss += dis_adv_loss.data
+       
+        ## Update Generator
+        if (batch_idx % 3) != 0:
+            opt_gen.zero_grad()
+            gen_loss.backward()
+            torch.nn.utils.clip_grad_norm_(gen.parameters(), 1.0)
+            opt_gen.step()
+       
+        ## Update Discriminator
+        if (batch_idx % 3) == 0:
+            opt_dis.zero_grad()
+            dis_loss.backward()
+            torch.nn.utils.clip_grad_norm_(dis.parameters(), 1.0)
+            opt_dis.step()
+
+\end{lstlisting}
+
+\begin{lstlisting}[style=pyplain,caption={FT training algorithm}]
+def train(gen, dis, opt_gen, opt_dis, epoch, train_loader, train_diff_loader, train_rand_loader, writer):
+    torch.autograd.set_detect_anomaly(True)
+   
+    gen.train()
+    dis.train()
+
+    mse = nn.MSELoss(reduction = 'none').cuda(0)
+    mrf = IDMRFLoss(device=0)
+
+    acc_pixel_rec_loss = 0
+    acc_feat_rec_loss = 0
+    acc_mrf_loss = 0
+    acc_feat_cons_loss = 0
+    acc_gen_adv_loss = 0
+    acc_dis_adv_loss = 0
+   
+    iter_train_diff_loader = iter(train_diff_loader)
+   
+    for batch_idx, (I_l, I_r, I_m) in enumerate(train_loader):
+       
+        if batch_idx % 10 == 0:
+            print("train iter %d" %batch_idx)
+           
+        batchSize_rec = I_l.shape[0]
+        imgSize = I_l.shape[2]
+       
+        (I1, I2) = next(iter_train_diff_loader) # I1 and I2 are inputs from different images
+           
+        I_rand = next(iter(train_rand_loader))
+       
+        I_l = torch.cat((I_l, I1), dim=0)
+        I_r = torch.cat((I_r, I2), dim=0)
+
+        batchSize = I_l.shape[0]
+           
+        I_l, I_r, I_m, I_rand = Variable(I_l).cuda(0), Variable(I_r).cuda(0), Variable(I_m).cuda(0), Variable(I_rand).cuda(0)
+       
+        # Generate Image
+        I_pred, f_m, F_l, F_r = gen(I_l, I_r)
+        f_m_gt = gen(I_m, only_encode=True) # gt for feature map of middle part
+        I_pred_split = list(torch.split(I_pred, imgSize, dim=3))
+        I_gt = torch.cat((I_l[:batchSize_rec],I_m,I_r[:batchSize_rec]),3)
+        I_real = torch.cat((I_gt, I_rand),0)
+       
+        # Discriminator
+        fake = dis(I_pred)
+        real= dis(I_real)
+       
+        ## Compute losses        
+        # Pixel Reconstruction Loss
+        weight = gaussian_weight(batchSize_rec, imgSize, device=0)
+        mask = weight + weight.flip(3)
+        pixel_rec_loss = (mse(I_pred_split[0], I_l) + mse(I_pred_split[2], I_r)).mean() * batchSize + (mask * mse(I_pred_split[1][:batchSize_rec], I_m)).mean() * batchSize_rec
+             
+        # Texture Consistency Loss (IDMRF Loss)
+        mrf_loss = mrf((I_pred_split[1][:batchSize_rec].cuda(0)+1)/2.0, (I_m.cuda(0)+1)/2.0) * 0.01
+       
+        # Feature Reconstruction Loss
+        feat_rec_loss = mse(f_m[:batchSize_rec], f_m_gt.detach()).mean() * batchSize_rec
+       
+        # Feature Consistency Loss
+        feat_cons_loss = (mse(F_l[0], F_r[0]) + mse(F_l[1], F_r[1]) + mse(F_l[2], F_r[2])).mean() * batchSize        
+       
+        # RaLSGAN Adversarial Loss
+        real_label = torch.ones(batchSize,1).cuda(0)
+        fake_label = torch.zeros(batchSize,1).cuda(0)
+        gen_adv_loss = ((fake - real.mean(0, keepdim=True) - fake_label) ** 2).mean() * batchSize * 0.002 * 0.9
+        dis_adv_loss = (((real - fake.mean(0, keepdim=True) - real_label) ** 2).mean() + ((fake - real.mean(0, keepdim=True) + real_label) ** 2).mean()) * batchSize
+       
+        gen_loss = pixel_rec_loss + mrf_loss.cuda(0) + feat_rec_loss + feat_cons_loss + gen_adv_loss
+        dis_loss = dis_adv_loss
+        acc_pixel_rec_loss += pixel_rec_loss.data
+        acc_mrf_loss += mrf_loss.data
+        acc_feat_rec_loss += feat_rec_loss.data
+        acc_feat_cons_loss += feat_cons_loss.data
+        acc_gen_adv_loss += gen_adv_loss.data
+        acc_dis_adv_loss += dis_adv_loss.data
+       
+        ## Update Generator
+        if (batch_idx % 3) != 0:
+            opt_gen.zero_grad()
+            gen_loss.backward()
+            torch.nn.utils.clip_grad_norm_(gen.parameters(), 5.0)
+            opt_gen.step()
+       
+        ## Update Discriminator
+        if (batch_idx % 3) == 0:
+            opt_dis.zero_grad()
+            dis_loss.backward()
+            torch.nn.utils.clip_grad_norm_(dis.parameters(), 5.0)
+            opt_dis.step()        
+
+\end{lstlisting}
 
 \end{document}
